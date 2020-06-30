@@ -8,11 +8,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
+
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationManagerCompat;
 
 import com.dieam.reactnativepushnotification.helpers.ApplicationBadgeHelper;
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContext;
@@ -22,12 +25,17 @@ import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
 import android.util.Log;
 
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.Task;
+import com.google.firebase.iid.FirebaseInstanceId;
+import com.google.firebase.iid.InstanceIdResult;
 import com.google.firebase.messaging.FirebaseMessaging;
 
 public class RNPushNotification extends ReactContextBaseJavaModule implements ActivityEventListener {
@@ -36,6 +44,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     private RNPushNotificationHelper mRNPushNotificationHelper;
     private final Random mRandomNumberGenerator = new Random(System.currentTimeMillis());
     private RNPushNotificationJsDelivery mJsDelivery;
+	private Bundle savedBundle = null;
 
     public RNPushNotification(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -49,7 +58,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
         // This is used to delivery callbacks to JS
         mJsDelivery = new RNPushNotificationJsDelivery(reactContext);
 
-        registerNotificationsRegistration();
+        mRNPushNotificationHelper.checkOrCreateDefaultChannel();
     }
 
     @Override
@@ -73,28 +82,23 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
         }
         return bundle;
     }
+
+    @Override
     public void onNewIntent(Intent intent) {
-        Bundle bundle = this.getBundleFromIntent(intent);
-        if (bundle != null) {
+		 if(intent.hasExtra("google.message_id")){
+			System.out.println(intent.getExtras());
+            Bundle bundle = intent.getExtras();
+            bundle.putBoolean("foreground", false);
+            intent.putExtra("notification", bundle);
+            this.savedBundle =  bundle;
+            mJsDelivery.notifyNotification(bundle);
+        }
+        if (intent.hasExtra("notification")) {
+            Bundle bundle = intent.getBundleExtra("notification");
             bundle.putBoolean("foreground", false);
             intent.putExtra("notification", bundle);
             mJsDelivery.notifyNotification(bundle);
         }
-    }
-
-    private void registerNotificationsRegistration() {
-        IntentFilter intentFilter = new IntentFilter(getReactApplicationContext().getPackageName() + ".RNPushNotificationRegisteredToken");
-
-        getReactApplicationContext().registerReceiver(new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                String token = intent.getStringExtra("token");
-                WritableMap params = Arguments.createMap();
-                params.putString("deviceToken", token);
-
-                mJsDelivery.sendEvent("remoteNotificationsRegistered", params);
-            }
-        }, intentFilter);
     }
 
     private void registerNotificationsReceiveNotificationActions(ReadableArray actions) {
@@ -104,6 +108,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
             String action = actions.getString(i);
             intentFilter.addAction(getReactApplicationContext().getPackageName() + "." + action);
         }
+        
         getReactApplicationContext().registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -128,22 +133,33 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     }
 
     @ReactMethod
-    public void requestPermissions(String senderID) {
-        ReactContext reactContext = getReactApplicationContext();
+    public void requestPermissions() {
+      final RNPushNotificationJsDelivery fMjsDelivery = mJsDelivery;
+      
+      FirebaseInstanceId.getInstance().getInstanceId()
+              .addOnCompleteListener(new OnCompleteListener<InstanceIdResult>() {
+                  @Override
+                  public void onComplete(@NonNull Task<InstanceIdResult> task) {
+                      if (!task.isSuccessful()) {
+                          Log.e(LOG_TAG, "exception", task.getException());
+                          return;
+                      }
 
-        Intent GCMService = new Intent(reactContext, RNPushNotificationRegistrationService.class);
-
-        try {
-            GCMService.putExtra("senderID", senderID);
-            reactContext.startService(GCMService);
-        } catch (Exception e) {
-            Log.d("EXCEPTION SERVICE::::::", "requestPermissions: " + e);
-        }
+                      WritableMap params = Arguments.createMap();
+                      params.putString("deviceToken", task.getResult().getToken());
+                      fMjsDelivery.sendEvent("remoteNotificationsRegistered", params);
+                  }
+              });
     }
 
     @ReactMethod
     public void subscribeToTopic(String topic) {
         FirebaseMessaging.getInstance().subscribeToTopic(topic);
+    }
+    
+    @ReactMethod
+    public void unsubscribeFromTopic(String topic) {
+        FirebaseMessaging.getInstance().unsubscribeFromTopic(topic);
     }
 
     @ReactMethod
@@ -170,8 +186,18 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     public void getInitialNotification(Promise promise) {
         WritableMap params = Arguments.createMap();
         Activity activity = getCurrentActivity();
-        if (activity != null) {
-            Bundle bundle = this.getBundleFromIntent(activity.getIntent());
+       if (activity != null) {
+            Intent intent = activity.getIntent();
+            Bundle bundle = null;
+             if (intent.hasExtra("notification")) {
+                bundle = intent.getBundleExtra("notification");
+            } else if (intent.hasExtra("google.message_id")) {
+                bundle = intent.getExtras();
+            }
+             if (this.savedBundle != null){
+                bundle = savedBundle;
+                this.savedBundle = null;
+            }
             if (bundle != null) {
                 bundle.putBoolean("foreground", false);
                 String bundleString = mJsDelivery.convertJSON(bundle);
@@ -201,10 +227,6 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
      * Cancels all scheduled local notifications, and removes all entries from the notification
      * centre.
      *
-     * We're attempting to keep feature parity with the RN iOS implementation in
-     * <a href="https://github.com/facebook/react-native/blob/master/Libraries/PushNotificationIOS/RCTPushNotificationManager.m#L289">RCTPushNotificationManager</a>.
-     *
-     * @see <a href="https://facebook.github.io/react-native/docs/pushnotificationios.html">RN docs</a>
      */
     public void cancelAllLocalNotifications() {
         mRNPushNotificationHelper.cancelAllScheduledNotifications();
@@ -215,10 +237,6 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     /**
      * Cancel scheduled notifications, and removes notifications from the notification centre.
      *
-     * Note - as we are trying to achieve feature parity with iOS, this method cannot be used
-     * to remove specific alerts from the notification centre.
-     *
-     * @see <a href="https://facebook.github.io/react-native/docs/pushnotificationios.html">RN docs</a>
      */
     public void cancelLocalNotifications(ReadableMap userInfo) {
         mRNPushNotificationHelper.cancelScheduledNotification(userInfo);
@@ -235,5 +253,49 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     @ReactMethod
     public void registerNotificationActions(ReadableArray actions) {
         registerNotificationsReceiveNotificationActions(actions);
+    }
+
+    @ReactMethod
+    /**
+     * Clears all notifications from the notification center
+     *
+     */
+    public void removeAllDeliveredNotifications() {
+      mRNPushNotificationHelper.clearNotifications();
+    }
+
+    @ReactMethod
+    /**
+     * Returns a list of all notifications currently in the Notification Center
+     */
+    public void getDeliveredNotifications(Callback callback) {
+      callback.invoke(mRNPushNotificationHelper.getDeliveredNotifications());
+    }
+
+    @ReactMethod
+    /**
+     * Removes notifications from the Notification Center, whose id matches
+     * an element in the provided array
+     */
+    public void removeDeliveredNotifications(ReadableArray identifiers) {
+      mRNPushNotificationHelper.clearDeliveredNotifications(identifiers);
+    }
+
+    @ReactMethod
+    /**
+     * Unregister for all remote notifications received
+     */
+    public void abandonPermissions() {
+      new Thread(new Runnable() {
+          @Override
+          public void run() {
+              try {
+                  FirebaseInstanceId.getInstance().deleteInstanceId();
+                  Log.i(LOG_TAG, "InstanceID deleted");
+              } catch (IOException e) {
+                  Log.e(LOG_TAG, "exception", e);
+              }
+          }
+      }).start();
     }
 }
