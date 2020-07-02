@@ -108,7 +108,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
             String action = actions.getString(i);
             intentFilter.addAction(getReactApplicationContext().getPackageName() + "." + action);
         }
-        
+
         getReactApplicationContext().registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -135,7 +135,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     @ReactMethod
     public void requestPermissions() {
       final RNPushNotificationJsDelivery fMjsDelivery = mJsDelivery;
-      
+
       FirebaseInstanceId.getInstance().getInstanceId()
               .addOnCompleteListener(new OnCompleteListener<InstanceIdResult>() {
                   @Override
@@ -156,7 +156,7 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     public void subscribeToTopic(String topic) {
         FirebaseMessaging.getInstance().subscribeToTopic(topic);
     }
-    
+
     @ReactMethod
     public void unsubscribeFromTopic(String topic) {
         FirebaseMessaging.getInstance().unsubscribeFromTopic(topic);
